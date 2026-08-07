@@ -1,5 +1,19 @@
 import { randomUUID } from 'node:crypto';
 
+export const REQUIRED_APPROVAL_MODE = 'xshell-dialog-v1';
+const RISK_LEVELS = new Set(['low', 'medium', 'high', 'critical']);
+const SENSITIVE_PROMPT_PATTERN = /(?:password|passphrase|密码|口令|验证码|verification(?:\s+code)?|one[- ]time(?:\s+password)?|otp|pin|authentication\s+code|api\s*key|token)[^\r\n]{0,160}[:：?]\s*$/i;
+const SENSITIVE_INPUT_PATTERNS = [
+  /\bsshpass\b/i,
+  /\bsudo\b[^\r\n]*\s-S(?:\s|$)/i,
+  /--password-stdin\b/i,
+  /(?:^|\s)--?(?:password|passwd|passphrase|token|secret|api[-_]?key)(?:=|\s+)\S+/i,
+  /(?:^|\s)(?:PASSWORD|PASSWD|PASSPHRASE|TOKEN|SECRET|API_KEY)\s*=\s*\S+/i,
+  /\b(?:mysql|mariadb)\b[^\r\n]*\s-p(?!\s|$)\S+/i,
+  /:\/\/[^/\s:@]+:[^@\s/]+@/,
+  /(?:^|\s)-u\s+[^\s:]+:[^\s]+/i,
+];
+
 export class BridgeError extends Error {
   constructor(message, statusCode = 400, code = 'BAD_REQUEST') {
     super(message);
@@ -26,16 +40,29 @@ function publicJob(job) {
 
 function auditJob(job) {
   const action = job.action?.type === 'send'
-    ? { type: 'send', enter: Boolean(job.action.enter), textLength: job.action.text.length }
-    : { type: job.action?.type };
+    ? {
+        type: 'send',
+        enter: Boolean(job.action.enter),
+        textLength: job.action.text.length,
+        explanationLength: job.action.explanation.length,
+        expectedOutcomeLength: job.action.expectedOutcome.length,
+        riskLevel: job.action.riskLevel,
+      }
+    : {
+        type: job.action?.type,
+        explanationLength: job.action?.explanation?.length,
+        expectedOutcomeLength: job.action?.expectedOutcome?.length,
+        riskLevel: job.action?.riskLevel,
+      };
   return { ...publicJob(job), action };
 }
 
 export class XshellBridgeCore {
-  constructor({ staleSessionMs = 5_000, jobTimeoutMs = 30_000, maxSendChars = 8_192, now = Date.now, audit = () => {} } = {}) {
+  constructor({ staleSessionMs = 5_000, jobTimeoutMs = 120_000, maxSendChars = 8_192, maxExplanationChars = 1_000, now = Date.now, audit = () => {} } = {}) {
     this.staleSessionMs = staleSessionMs;
     this.jobTimeoutMs = jobTimeoutMs;
     this.maxSendChars = maxSendChars;
+    this.maxExplanationChars = maxExplanationChars;
     this.now = now;
     this.audit = audit;
     this.sessions = new Map();
@@ -96,7 +123,15 @@ export class XshellBridgeCore {
     if (!this.isOnline(session)) {
       throw new BridgeError('The Xshell bridge is offline or stale.', 409, 'SESSION_OFFLINE');
     }
+    if (session.metadata.approvalMode !== REQUIRED_APPROVAL_MODE) {
+      throw new BridgeError(
+        'This Xshell tab is not running the v2 bridge with local user approval. Restart the updated Xshell script.',
+        409,
+        'APPROVAL_UNAVAILABLE',
+      );
+    }
     this.validateAction(action);
+    if (action.type === 'send') this.validateSensitiveInput(session, action.text);
     const now = this.now();
     const job = {
       id: randomUUID(),
@@ -225,6 +260,7 @@ export class XshellBridgeCore {
     if (!action || typeof action !== 'object') {
       throw new BridgeError('action must be an object.');
     }
+    this.validateApprovalDetails(action);
     if (action.type === 'send') {
       if (typeof action.text !== 'string') throw new BridgeError('send.text must be a string.');
       if (action.text.length > this.maxSendChars) {
@@ -238,5 +274,37 @@ export class XshellBridgeCore {
     }
     if (action.type === 'interrupt') return;
     throw new BridgeError(`Unsupported action type: ${action.type}`, 400, 'UNSUPPORTED_ACTION');
+  }
+
+  validateApprovalDetails(action) {
+    for (const field of ['explanation', 'expectedOutcome']) {
+      if (typeof action[field] !== 'string' || action[field].trim().length === 0) {
+        throw new BridgeError(`action.${field} must explain the proposed operation to the user.`, 400, 'EXPLANATION_REQUIRED');
+      }
+      if (action[field].length > this.maxExplanationChars) {
+        throw new BridgeError(`action.${field} exceeds the ${this.maxExplanationChars} character limit.`, 413, 'INPUT_TOO_LARGE');
+      }
+    }
+    if (!RISK_LEVELS.has(action.riskLevel)) {
+      throw new BridgeError('action.riskLevel must be one of: low, medium, high, critical.', 400, 'RISK_LEVEL_REQUIRED');
+    }
+  }
+
+  validateSensitiveInput(session, text) {
+    const visibleTail = String(session.screen || '').trimEnd().split(/\r?\n/).slice(-3).join('\n');
+    if (SENSITIVE_PROMPT_PATTERN.test(visibleTail)) {
+      throw new BridgeError(
+        '检测到密码、口令或验证码输入提示。为保护凭据，Agent 不得发送内容；请用户直接在 Xshell 中手动输入。',
+        409,
+        'SENSITIVE_PROMPT_REQUIRES_USER_INPUT',
+      );
+    }
+    if (SENSITIVE_INPUT_PATTERNS.some((pattern) => pattern.test(text))) {
+      throw new BridgeError(
+        '输入内容疑似包含密码、Token、API Key 或自动填密参数。桥接程序已拒绝发送，请由用户在 Xshell 中手动输入敏感信息。',
+        400,
+        'SENSITIVE_INPUT_BLOCKED',
+      );
+    }
   }
 }

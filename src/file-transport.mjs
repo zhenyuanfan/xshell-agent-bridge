@@ -75,9 +75,12 @@ export class FileBridgeTransport {
     if (Date.now() - stateInfo.mtimeMs > this.staleSessionMs) return;
 
     const state = await readJson(statePath);
-    if (state.protocol !== 'xshell-agent-file-v1' || state.sessionId !== sessionId) return;
+    if (!['xshell-agent-file-v1', 'xshell-agent-file-v2'].includes(state.protocol) || state.sessionId !== sessionId) return;
     const payload = {
-      metadata: { ...(state.metadata || {}), transport: 'file-v1' },
+      metadata: {
+        ...(state.metadata || {}),
+        transport: state.protocol === 'xshell-agent-file-v2' ? 'file-v2' : 'file-v1-read-only',
+      },
       screen: String(state.screen || ''),
     };
     if (this.core.sessions.has(sessionId)) this.core.heartbeat(sessionId, payload);

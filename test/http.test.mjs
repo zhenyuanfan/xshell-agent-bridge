@@ -23,11 +23,25 @@ test('HTTP bridge completes a queued write end to end', async (t) => {
 
   assert.equal((await call('/bridge/register', {
     method: 'POST',
-    body: JSON.stringify({ bridgeId: 'test-session', screen: '$ ' }),
+    body: JSON.stringify({
+      bridgeId: 'test-session',
+      screen: '$ ',
+      metadata: { approvalMode: 'xshell-dialog-v1' },
+    }),
   })).status, 201);
   const queued = await call('/v1/sessions/test-session/jobs', {
     method: 'POST',
-    body: JSON.stringify({ agentId: 'test', action: { type: 'send', text: 'pwd', enter: true } }),
+    body: JSON.stringify({
+      agentId: 'test',
+      action: {
+        type: 'send',
+        text: 'pwd',
+        enter: true,
+        explanation: 'Show the current directory.',
+        expectedOutcome: 'The current path is printed.',
+        riskLevel: 'low',
+      },
+    }),
   });
   assert.equal(queued.status, 202);
 
@@ -35,7 +49,7 @@ test('HTTP bridge completes a queued write end to end', async (t) => {
   assert.equal(delivered.value.id, queued.value.id);
   await call(`/bridge/sessions/test-session/jobs/${delivered.value.id}`, {
     method: 'POST',
-    body: JSON.stringify({ ok: true, result: { acceptedByXshell: true } }),
+    body: JSON.stringify({ ok: true, result: { acceptedByXshell: true, approvedByUser: true } }),
   });
   const completed = await call(`/v1/jobs/${queued.value.id}`);
   assert.equal(completed.value.status, 'completed');

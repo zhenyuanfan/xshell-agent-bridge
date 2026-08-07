@@ -13,7 +13,14 @@ await bridgeRequest('/bridge/register', {
   method: 'POST',
   body: {
     bridgeId: id,
-    metadata: { connected: true, remoteAddress: 'mock.local', remotePort: 22, rows: 24, columns: 80 },
+    metadata: {
+      connected: true,
+      remoteAddress: 'mock.local',
+      remotePort: 22,
+      rows: 24,
+      columns: 80,
+      approvalMode: 'xshell-dialog-v1',
+    },
     screen,
   },
 });
