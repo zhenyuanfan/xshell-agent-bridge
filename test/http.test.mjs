@@ -26,7 +26,7 @@ test('HTTP bridge completes a queued write end to end', async (t) => {
     body: JSON.stringify({
       bridgeId: 'test-session',
       screen: '$ ',
-      metadata: { approvalMode: 'xshell-dialog-v1' },
+      metadata: { approvalMode: 'xshell-dialog-v1', commandPolicyMode: 'agent-destructive-block-v1' },
     }),
   })).status, 201);
   const queued = await call('/v1/sessions/test-session/jobs', {

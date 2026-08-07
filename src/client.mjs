@@ -4,7 +4,7 @@ import { fileURLToPath } from 'node:url';
 import { loadConfig } from './config.mjs';
 
 const DAEMON_ENTRY = fileURLToPath(new URL('./daemon.mjs', import.meta.url));
-const REQUIRED_DAEMON_VERSION = '0.2.0';
+const REQUIRED_DAEMON_VERSION = '0.4.0';
 
 function delay(ms) {
   return new Promise((resolveDelay) => setTimeout(resolveDelay, ms));

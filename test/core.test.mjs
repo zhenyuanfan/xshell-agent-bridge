@@ -2,7 +2,10 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { BridgeError, XshellBridgeCore } from '../src/core.mjs';
 
-const approvalMetadata = { approvalMode: 'xshell-dialog-v1' };
+const approvalMetadata = {
+  approvalMode: 'xshell-dialog-v1',
+  commandPolicyMode: 'agent-destructive-block-v1',
+};
 const sendAction = (text, enter = true) => ({
   type: 'send',
   text,
@@ -99,6 +102,15 @@ test('rejects writes from a legacy bridge without local approval capability', ()
   );
 });
 
+test('rejects writes when the Xshell script lacks the enterprise command policy', () => {
+  const core = new XshellBridgeCore();
+  core.register({ bridgeId: 'approval-only', metadata: { approvalMode: 'xshell-dialog-v1' } });
+  assert.throws(
+    () => core.submitJob('approval-only', { action: sendAction('pwd') }),
+    (error) => error instanceof BridgeError && error.code === 'COMMAND_POLICY_UNAVAILABLE',
+  );
+});
+
 test('requires an explanation, expected outcome, and risk level for every write', () => {
   const core = new XshellBridgeCore();
   core.register({ bridgeId: 'one', metadata: approvalMetadata });
@@ -153,4 +165,48 @@ test('does not block ordinary commands that only mention the word password', () 
   assert.doesNotThrow(
     () => core.submitJob('one', { action: sendAction("grep -n password /etc/login.defs") }),
   );
+});
+
+test('hard-blocks destructive Agent commands before they enter the queue', () => {
+  const blockedInputs = [
+    'rm -f /tmp/app.jar',
+    'sudo /usr/bin/rm -rf /var/lib/app',
+    'find /opt/app -type f -delete',
+    'python -c "import shutil; shutil.rmtree(\'/tmp/app\')"',
+    'docker system prune -af',
+    'docker compose down -v',
+    'kubectl delete namespace production',
+    'mysql -e "DROP TABLE users"',
+    'dd if=/dev/zero of=/dev/sda',
+    'mkfs.ext4 /dev/sdb1',
+    'apt-get purge nginx',
+    'git reset --hard HEAD~1',
+    'shutdown -h now',
+    'iptables -F',
+  ];
+  for (const [index, text] of blockedInputs.entries()) {
+    const core = new XshellBridgeCore();
+    core.register({ bridgeId: `destructive-${index}`, metadata: approvalMetadata, screen: '$ ' });
+    assert.throws(
+      () => core.submitJob(`destructive-${index}`, { action: sendAction(text) }),
+      (error) => error instanceof BridgeError && error.code === 'DESTRUCTIVE_COMMAND_BLOCKED',
+      text,
+    );
+    assert.equal(core.listSessions()[0].queuedWrites, 0);
+  }
+});
+
+test('allows non-destructive deployment and inspection commands', () => {
+  const allowedInputs = [
+    'docker run --rm eclipse-temurin:8-jdk java -version',
+    'docker ps -a',
+    'systemctl status docker',
+    'find /opt/app -type f -maxdepth 2',
+    'git status --short',
+  ];
+  for (const [index, text] of allowedInputs.entries()) {
+    const core = new XshellBridgeCore();
+    core.register({ bridgeId: `allowed-${index}`, metadata: approvalMetadata, screen: '$ ' });
+    assert.doesNotThrow(() => core.submitJob(`allowed-${index}`, { action: sendAction(text) }), text);
+  }
 });
