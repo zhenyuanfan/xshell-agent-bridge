@@ -76,7 +76,7 @@ export async function createDaemon({ config: providedConfig, listen = true } = {
         sendJson(response, 200, {
           ok: true,
           service: 'xshell-agent-bridge',
-          version: '0.2.0',
+          version: '0.4.0',
           onlineSessions: sessions.filter((session) => session.online).length,
           totalSessions: sessions.length,
         });

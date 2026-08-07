@@ -14,7 +14,7 @@ test('file transport discovers a bridge and completes a write', async (t) => {
   const state = {
     protocol: 'xshell-agent-file-v2',
     sessionId: 'local-one',
-    metadata: { connected: true, approvalMode: 'xshell-dialog-v1' },
+    metadata: { connected: true, approvalMode: 'xshell-dialog-v1', commandPolicyMode: 'agent-destructive-block-v1' },
     screen: 'C:\\> ',
   };
   await writeFile(resolve(sessionDir, 'state.json'), JSON.stringify(state));
@@ -60,7 +60,7 @@ test('file transport recovers an uncertain active write without replaying it', a
   await writeFile(resolve(sessionDir, 'state.json'), JSON.stringify({
     protocol: 'xshell-agent-file-v2',
     sessionId: 'recovered-one',
-    metadata: { approvalMode: 'xshell-dialog-v1' },
+    metadata: { approvalMode: 'xshell-dialog-v1', commandPolicyMode: 'agent-destructive-block-v1' },
     screen: '$ ',
   }));
   const uncertain = {
