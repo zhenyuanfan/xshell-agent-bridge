@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 
 export const REQUIRED_APPROVAL_MODE = 'xshell-dialog-v1';
+export const REQUIRED_COMMAND_POLICY_MODE = 'agent-destructive-block-v1';
 const RISK_LEVELS = new Set(['low', 'medium', 'high', 'critical']);
 const SENSITIVE_PROMPT_PATTERN = /(?:password|passphrase|密码|口令|验证码|verification(?:\s+code)?|one[- ]time(?:\s+password)?|otp|pin|authentication\s+code|api\s*key|token)[^\r\n]{0,160}[:：?]\s*$/i;
 const SENSITIVE_INPUT_PATTERNS = [
@@ -13,6 +14,53 @@ const SENSITIVE_INPUT_PATTERNS = [
   /:\/\/[^/\s:@]+:[^@\s/]+@/,
   /(?:^|\s)-u\s+[^\s:]+:[^\s]+/i,
 ];
+const HARD_BLOCKED_INPUT_PATTERNS = [
+  {
+    category: '文件删除或内容清空',
+    pattern: /(?:^|[\s;&|()'"\x60])(?:\/(?:usr\/)?bin\/)?(?:rm|rmdir|unlink|shred|remove-item|clear-content|erase|del|rd)(?=[\s;&|()'"\x60]|$)/i,
+  },
+  {
+    category: '脚本删除文件',
+    pattern: /\b(?:os\.(?:remove|unlink)|shutil\.rmtree|fileutils\.rm_rf|fs\.(?:rm|unlink)(?:sync)?|[a-z_$][\w$]*\.unlink)\s*\(/i,
+  },
+  {
+    category: 'find 批量删除',
+    pattern: /\bfind\b[^\r\n]{0,2000}(?:-delete|-exec(?:dir)?\s+)/i,
+  },
+  {
+    category: '容器或编排资源删除',
+    pattern: /\b(?:(?:docker|podman)\s+(?:(?:container|image|volume|network|system|builder)\s+)?(?:rm|rmi|prune)|(?:docker|podman)\s+compose\b[^\r\n;&|]{0,240}\bdown\b|kubectl\s+delete|helm\s+uninstall|crictl\s+(?:rm|rmi))\b/i,
+  },
+  {
+    category: '数据库删除或清空',
+    pattern: /(?:^|[\s;"'\x60])(?:drop\s+(?:database|schema|table|view|index|user)|truncate\s+(?:table\s+)?|delete\s+from)\b/i,
+  },
+  {
+    category: '磁盘格式化或擦除',
+    pattern: /(?:^|[\s;&|()'"\x60])(?:mkfs(?:\.[\w-]+)?|wipefs|blkdiscard|fdisk|cfdisk|sfdisk|format-volume)(?=[\s;&|()'"\x60]|$)|\bdd\b[^\r\n]{0,500}\bof\s*=\s*\/dev\//i,
+  },
+  {
+    category: '软件包卸载',
+    pattern: /\b(?:(?:apt|apt-get)\b[^\r\n;&|]{0,240}\b(?:remove|purge|autoremove)|(?:yum|dnf)\b[^\r\n;&|]{0,240}\b(?:remove|erase|autoremove)|rpm\b[^\r\n;&|]{0,240}\s-e(?:\s|$)|apk\s+del|pacman\s+-R)\b/i,
+  },
+  {
+    category: '版本库强制清理',
+    pattern: /\bgit\s+(?:reset\b[^\r\n;&|]{0,240}--hard|clean\b[^\r\n;&|]{0,240}(?:-[^\s]*f|--force))\b/i,
+  },
+  {
+    category: '关机或重启',
+    pattern: /(?:^|[\s;&|()'"\x60])(?:shutdown|reboot|poweroff|halt)(?=[\s;&|()'"\x60]|$)|\bsystemctl\s+(?:poweroff|reboot|halt)\b|(?:^|[\s;&|])init\s+[06](?=\s|$)/i,
+  },
+  {
+    category: '防火墙规则清空',
+    pattern: /\biptables\b[^\r\n;&|]{0,240}(?:\s-F|\s-X|--flush)|\bnft\s+flush\s+ruleset\b/i,
+  },
+];
+
+function findHardBlockedOperation(text) {
+  const normalized = String(text || '').replace(/\\\r?\n/g, ' ');
+  return HARD_BLOCKED_INPUT_PATTERNS.find(({ pattern }) => pattern.test(normalized))?.category || null;
+}
 
 export class BridgeError extends Error {
   constructor(message, statusCode = 400, code = 'BAD_REQUEST') {
@@ -130,8 +178,18 @@ export class XshellBridgeCore {
         'APPROVAL_UNAVAILABLE',
       );
     }
+    if (session.metadata.commandPolicyMode !== REQUIRED_COMMAND_POLICY_MODE) {
+      throw new BridgeError(
+        'This Xshell tab is not running the enterprise destructive-command blocker. Restart the updated Xshell script.',
+        409,
+        'COMMAND_POLICY_UNAVAILABLE',
+      );
+    }
     this.validateAction(action);
-    if (action.type === 'send') this.validateSensitiveInput(session, action.text);
+    if (action.type === 'send') {
+      this.validateHardBlockedInput(action.text);
+      this.validateSensitiveInput(session, action.text);
+    }
     const now = this.now();
     const job = {
       id: randomUUID(),
@@ -306,5 +364,15 @@ export class XshellBridgeCore {
         'SENSITIVE_INPUT_BLOCKED',
       );
     }
+  }
+
+  validateHardBlockedInput(text) {
+    const category = findHardBlockedOperation(text);
+    if (!category) return;
+    throw new BridgeError(
+      `企业安全模式已禁止 Agent 执行“${category}”操作。即使用户愿意确认，桥接程序也不会发送；如确有需要，请用户在 Xshell 中亲自输入。`,
+      403,
+      'DESTRUCTIVE_COMMAND_BLOCKED',
+    );
   }
 }

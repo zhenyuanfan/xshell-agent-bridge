@@ -1,8 +1,8 @@
 {
   "name": "xshell-agent-bridge",
-  "version": "0.2.0",
+  "version": "0.4.0",
   "private": true,
-  "description": "Vendor-neutral MCP bridge for controlling Xshell sessions from AI agents.",
+  "description": "Safe MCP bridge for Xshell terminal control and OpenSSH file transfers with local user approval.",
   "type": "module",
   "scripts": {
     "start": "node src/daemon.mjs",
