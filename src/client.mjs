@@ -4,6 +4,7 @@ import { fileURLToPath } from 'node:url';
 import { loadConfig } from './config.mjs';
 
 const DAEMON_ENTRY = fileURLToPath(new URL('./daemon.mjs', import.meta.url));
+const REQUIRED_DAEMON_VERSION = '0.2.0';
 
 function delay(ms) {
   return new Promise((resolveDelay) => setTimeout(resolveDelay, ms));
@@ -76,13 +77,23 @@ export class DaemonClient {
   }
 }
 
+export function requireCompatibleDaemon(health) {
+  if (health?.version === REQUIRED_DAEMON_VERSION) return;
+  const error = new Error(
+    `The running Xshell bridge daemon is version ${health?.version || 'unknown'}, but this client requires ${REQUIRED_DAEMON_VERSION}. Stop the old daemon and restart the Agent client.`,
+  );
+  error.code = 'DAEMON_VERSION_MISMATCH';
+  throw error;
+}
+
 export async function connectToDaemon({ autoStart = true } = {}) {
   const config = await loadConfig();
   const client = new DaemonClient(config);
   try {
-    await client.health();
+    requireCompatibleDaemon(await client.health());
     return client;
   } catch (firstError) {
+    if (firstError.code === 'DAEMON_VERSION_MISMATCH') throw firstError;
     if (!autoStart) throw firstError;
   }
 
@@ -97,7 +108,7 @@ export async function connectToDaemon({ autoStart = true } = {}) {
   for (let attempt = 0; attempt < 30; attempt += 1) {
     await delay(100);
     try {
-      await client.health();
+      requireCompatibleDaemon(await client.health());
       return client;
     } catch (error) {
       lastError = error;

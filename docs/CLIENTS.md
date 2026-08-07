@@ -4,12 +4,12 @@ Xshell Agent Bridge 的 Agent 接口是标准 MCP stdio。每个客户端只负�
 
 ## Codex / ChatGPT desktop
 
-项目已包含 `.codex/config.toml`。重新打开此项目后，Codex、ChatGPT desktop 和 Codex IDE 扩展会共享这项配置。配置使用 `default_tools_approval_mode = "writes"`：读取工具可直接调用，`xshell_send` 与 `xshell_interrupt` 请求审批。
+项目已包含使用相对路径的 `.codex/config.toml`。重新打开此项目后，Codex、ChatGPT desktop 和 Codex IDE 扩展会加载这项配置。配置使用 `default_tools_approval_mode = "writes"`；除此之外，桥接脚本还会在 Xshell 内对每一次写操作强制弹窗确认。
 
 也可以添加到用户级配置：
 
 ```powershell
-codex mcp add xshell --env XSHELL_AGENT_ID=codex -- node "C:\Users\大佬\Documents\ChatGPT\codex操控xshell\src\mcp-stdio.mjs"
+codex mcp add xshell --env XSHELL_AGENT_ID=codex -- node "<PROJECT_ROOT>\src\mcp-stdio.mjs"
 ```
 
 ## Kimi Code CLI
@@ -21,7 +21,7 @@ codex mcp add xshell --env XSHELL_AGENT_ID=codex -- node "C:\Users\大佬\Docume
 项目已包含 `.mcp.json`。在项目目录启动 Claude Code，批准项目级 MCP server 后即可使用。也可手动添加：
 
 ```powershell
-claude mcp add -s project xshell -e XSHELL_AGENT_ID=claude -- node "C:\Users\大佬\Documents\ChatGPT\codex操控xshell\src\mcp-stdio.mjs"
+claude mcp add -s project xshell -e XSHELL_AGENT_ID=claude -- node "<PROJECT_ROOT>\src\mcp-stdio.mjs"
 ```
 
 ## 其他支持 MCP stdio 的 Agent
@@ -32,13 +32,15 @@ claude mcp add -s project xshell -e XSHELL_AGENT_ID=claude -- node "C:\Users\大
 {
   "command": "node",
   "args": [
-    "C:\\Users\\大佬\\Documents\\ChatGPT\\codex操控xshell\\src\\mcp-stdio.mjs"
+    "<PROJECT_ROOT>\\src\\mcp-stdio.mjs"
   ],
-  "cwd": "C:\\Users\\大佬\\Documents\\ChatGPT\\codex操控xshell",
+  "cwd": "<PROJECT_ROOT>",
   "env": {
     "XSHELL_AGENT_ID": "your-agent-name"
   }
 }
 ```
 
-同一 Xshell 标签页可以被多个 Agent 同时读取。所有写操作在守护进程中按标签页排队，不会并发输入。
+同一 Xshell 标签页可以被多个 Agent 同时读取。所有写操作在守护进程中按标签页排队，并逐条显示 Xshell 本地“是/否”确认框，不会并发输入。`<PROJECT_ROOT>` 表示你克隆本仓库后的实际绝对路径。
+
+无论使用哪种 Agent 客户端，密码、口令、Passphrase、PIN、OTP、验证码、Token 和 API Key 都必须由用户直接在 Xshell 中输入。不要给相关写工具设置绕过桥接规则的替代通道。

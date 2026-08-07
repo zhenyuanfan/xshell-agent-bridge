@@ -21,6 +21,14 @@ def load_config():
 CONFIG = load_config()
 POLL_MS = int(CONFIG.get("bridge", {}).get("pollIntervalMs", 250))
 BRIDGE_ID = os.urandom(16).hex()
+PROTOCOL = "xshell-agent-file-v2"
+APPROVAL_MODE = "xshell-dialog-v1"
+RISK_LABELS = {
+    "low": "低",
+    "medium": "中",
+    "high": "高",
+    "critical": "严重",
+}
 IPC_ROOT = os.path.abspath(os.path.join(SCRIPT_DIR, "..", "data", "ipc"))
 SESSION_DIR = os.path.join(IPC_ROOT, BRIDGE_ID)
 STATE_PATH = os.path.join(SESSION_DIR, "state.json")
@@ -59,6 +67,7 @@ def metadata():
         "sessionPath": str(safe_value(lambda: xsh.Session.Path, "")),
         "rows": int(safe_value(lambda: xsh.Screen.Rows, 0) or 0),
         "columns": int(safe_value(lambda: xsh.Screen.Columns, 0) or 0),
+        "approvalMode": APPROVAL_MODE,
     }
 
 
@@ -73,7 +82,7 @@ def capture_screen():
 def write_state():
     global LAST_STATE, LAST_TOUCH_AT
     state = {
-        "protocol": "xshell-agent-file-v1",
+        "protocol": PROTOCOL,
         "sessionId": BRIDGE_ID,
         "metadata": metadata(),
         "screen": capture_screen(),
@@ -89,9 +98,49 @@ def write_state():
         LAST_TOUCH_AT = now
 
 
+def approval_message(job):
+    action = job.get("action", {})
+    if action.get("type") == "send":
+        operation = "发送终端输入" + ("并按回车" if action.get("enter", False) else "（不按回车）")
+        exact_input = json.dumps(str(action.get("text", "")), ensure_ascii=False)
+        for codepoint in range(0x202A, 0x202F):
+            exact_input = exact_input.replace(chr(codepoint), "\\u" + format(codepoint, "04x"))
+        for codepoint in range(0x2066, 0x206A):
+            exact_input = exact_input.replace(chr(codepoint), "\\u" + format(codepoint, "04x"))
+    else:
+        operation = "发送 Ctrl+C 中断当前命令"
+        exact_input = "Ctrl+C"
+    remote_address = str(metadata().get("remoteAddress") or "未知主机")
+    return (
+        "AI Agent 请求执行一个终端操作。\n\n"
+        "目标主机：" + remote_address + "\n"
+        "Agent：" + str(job.get("agentId", "unknown-agent")) + "\n"
+        "操作：" + operation + "\n"
+        "风险等级：" + RISK_LABELS.get(str(action.get("riskLevel", "")), "未说明") + "\n\n"
+        "为什么要做：\n" + str(action.get("explanation", "")) + "\n\n"
+        "预期结果：\n" + str(action.get("expectedOutcome", "")) + "\n\n"
+        "将要发送的完整内容（引号内为输入，反斜杠表示转义字符）：\n---\n" + exact_input + "\n---\n\n"
+        "只有在你理解并同意以上内容时才点击“是”。点击“否”不会向服务器发送任何内容。"
+    )
+
+
+def request_user_approval(job):
+    try:
+        # Xshell MessageBox nType=4 displays Yes/No; return value 6 means Yes.
+        return int(xsh.Dialog.MessageBox(approval_message(job), "Xshell Agent Bridge 安全确认", 4)) == 6
+    except Exception as error:
+        raise RuntimeError("无法显示 Xshell 安全确认框，已拒绝执行：" + str(error))
+
+
 def execute_job(job):
     action = job.get("action", {})
     try:
+        if not request_user_approval(job):
+            atomic_write_json(
+                RESULT_PATH,
+                {"jobId": job["id"], "job": job, "ok": False, "error": "用户在 Xshell 安全确认框中拒绝了该操作。"},
+            )
+            return
         if action.get("type") == "send":
             xsh.Screen.Send(action.get("text", ""))
             if action.get("enter", False):
@@ -102,7 +151,12 @@ def execute_job(job):
             raise RuntimeError("unsupported action: " + str(action.get("type")))
         atomic_write_json(
             RESULT_PATH,
-            {"jobId": job["id"], "job": job, "ok": True, "result": {"acceptedByXshell": True}},
+            {
+                "jobId": job["id"],
+                "job": job,
+                "ok": True,
+                "result": {"acceptedByXshell": True, "approvedByUser": True},
+            },
         )
     except Exception as error:
         atomic_write_json(

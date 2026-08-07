@@ -6,7 +6,7 @@
   },
   "safety": {
     "maxSendChars": 8192,
-    "jobTimeoutMs": 30000,
+    "jobTimeoutMs": 120000,
     "staleSessionMs": 5000
   },
   "bridge": {

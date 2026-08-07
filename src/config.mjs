@@ -14,7 +14,7 @@ const DEFAULTS = {
   },
   safety: {
     maxSendChars: 8192,
-    jobTimeoutMs: 30_000,
+    jobTimeoutMs: 120_000,
     staleSessionMs: 5_000,
   },
   bridge: {
@@ -23,9 +23,12 @@ const DEFAULTS = {
 };
 
 function mergeConfig(raw) {
+  const safety = { ...DEFAULTS.safety, ...raw.safety };
+  if (!Number.isFinite(safety.jobTimeoutMs)) safety.jobTimeoutMs = DEFAULTS.safety.jobTimeoutMs;
+  safety.jobTimeoutMs = Math.max(DEFAULTS.safety.jobTimeoutMs, safety.jobTimeoutMs);
   return {
     server: { ...DEFAULTS.server, ...raw.server },
-    safety: { ...DEFAULTS.safety, ...raw.safety },
+    safety,
     bridge: { ...DEFAULTS.bridge, ...raw.bridge },
   };
 }

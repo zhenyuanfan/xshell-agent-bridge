@@ -3,9 +3,8 @@
     "xshell": {
       "command": "node",
       "args": [
-        "C:\\Users\\大佬\\Documents\\ChatGPT\\codex操控xshell\\src\\mcp-stdio.mjs"
+        "src/mcp-stdio.mjs"
       ],
-      "cwd": "C:\\Users\\大佬\\Documents\\ChatGPT\\codex操控xshell",
       "env": {
         "XSHELL_AGENT_ID": "kimi"
       },
