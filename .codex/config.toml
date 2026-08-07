@@ -1,0 +1,10 @@
+[mcp_servers.xshell]
+command = "node"
+args = ["C:\\Users\\大佬\\Documents\\ChatGPT\\codex操控xshell\\src\\mcp-stdio.mjs"]
+cwd = "C:\\Users\\大佬\\Documents\\ChatGPT\\codex操控xshell"
+startup_timeout_sec = 10
+tool_timeout_sec = 120
+default_tools_approval_mode = "writes"
+
+[mcp_servers.xshell.env]
+XSHELL_AGENT_ID = "codex"

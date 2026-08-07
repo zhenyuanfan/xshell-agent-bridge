@@ -1,0 +1,5 @@
+config/local.json
+data/
+*.log
+.DS_Store
+Thumbs.db

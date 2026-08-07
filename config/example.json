@@ -1,0 +1,15 @@
+{
+  "server": {
+    "host": "127.0.0.1",
+    "port": 32145,
+    "token": "replace-with-a-random-local-token"
+  },
+  "safety": {
+    "maxSendChars": 8192,
+    "jobTimeoutMs": 30000,
+    "staleSessionMs": 5000
+  },
+  "bridge": {
+    "pollIntervalMs": 250
+  }
+}
