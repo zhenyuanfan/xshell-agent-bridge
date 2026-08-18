@@ -1,5 +1,7 @@
 import { createInterface } from 'node:readline';
+import { createHash } from 'node:crypto';
 import { connectToDaemon } from './client.mjs';
+import { requireDesktopBridgeSession } from './desktop-bridge.mjs';
 import { SftpDownloadManager, SftpUploadManager } from './sftp-transfer.mjs';
 
 const AGENT_ID = process.env.XSHELL_AGENT_ID || `mcp-${process.pid}`;
@@ -157,9 +159,27 @@ function output(value, isError = false) {
   };
 }
 
-async function callTool(getClient, name, args = {}) {
-  if (name === 'sftp_download') return output(await downloadManager.startDownload(args));
-  if (name === 'sftp_upload') return output(await uploadManager.startUpload(args));
+function mcpRequestId(requestId) {
+  if (requestId === undefined || requestId === null) return undefined;
+  return createHash('sha256').update(`${AGENT_ID}\u0000${String(requestId)}`).digest('hex');
+}
+
+async function requireDesktopBridge(getClient) {
+  const client = await getClient();
+  const { sessions } = await client.listSessions();
+  requireDesktopBridgeSession(sessions);
+  return client;
+}
+
+async function callTool(getClient, name, args = {}, requestId) {
+  if (name === 'sftp_download') {
+    await requireDesktopBridge(getClient);
+    return output(await downloadManager.startDownload(args));
+  }
+  if (name === 'sftp_upload') {
+    await requireDesktopBridge(getClient);
+    return output(await uploadManager.startUpload(args));
+  }
   if (name === 'sftp_transfer_status') return output(await downloadManager.getStatus(args.transfer_id));
 
   const client = await getClient();
@@ -188,7 +208,11 @@ async function callTool(getClient, name, args = {}) {
           expectedOutcome: args.expected_outcome,
           riskLevel: args.risk_level,
         };
-    const queued = await client.submitJob(sessionId, { agentId: AGENT_ID, action });
+    const queued = await client.submitJob(sessionId, {
+      agentId: AGENT_ID,
+      requestId: mcpRequestId(requestId),
+      action,
+    });
     const job = await client.waitForJob(queued.id, args.timeout_ms ?? 120_000);
     return output({ job, screen: await client.readScreen(sessionId) }, job.status === 'failed');
   }
@@ -225,7 +249,7 @@ async function handle(request, getClient) {
   if (request.method === 'tools/list') return { tools };
   if (request.method === 'tools/call') {
     try {
-      return await callTool(getClient, request.params?.name, request.params?.arguments || {});
+      return await callTool(getClient, request.params?.name, request.params?.arguments || {}, request.id);
     } catch (error) {
       return output({ error: error.message, code: error.code || 'TOOL_ERROR' }, true);
     }
