@@ -127,6 +127,30 @@ HARD_BLOCKED_INPUT_PATTERNS = (
         ),
     ),
 )
+DYNAMIC_EXECUTION_PATTERNS = (
+    (
+        "将编码或下载内容交给命令解释器执行",
+        re.compile(
+            r"\b(?:base64|openssl\s+enc|xxd\s+-r|curl|wget)\b[^\r\n]{0,1000}"
+            r"\|\s*(?:(?:sudo|env|command|nohup)\s+)*(?:/?(?:usr/)?bin/)?(?:ba)?sh\b",
+            re.I,
+        ),
+    ),
+    (
+        "命令解释器或脚本解释器执行",
+        re.compile(
+            r"(?:^|[\r\n;&|]\s*)(?:(?:sudo|env|command|nohup|time|nice)\s+)*"
+            r"(?:/?(?:usr/)?bin/)?(?:ba)?sh\b|"
+            r"(?:^|[\r\n;&|]\s*)(?:(?:sudo|env|command|nohup|time|nice)\s+)*"
+            r"(?:/?(?:usr/)?bin/)?(?:python(?:3)?|node|perl|ruby|php|lua|pwsh|powershell|cmd(?:\.exe)?)\b",
+            re.I,
+        ),
+    ),
+    (
+        "动态变量或命令替换执行",
+        re.compile(r"\$\(|`|(?:^|[\r\n;&|]\s*)(?:eval|source)\b|(?:^|[\r\n;&|]\s*)\.\s+", re.I),
+    ),
+)
 
 
 def atomic_write_json(path, value):
@@ -226,7 +250,7 @@ def request_user_approval(job):
 
 def hard_blocked_operation(text):
     normalized = re.sub(r"\\\r?\n", " ", str(text or ""))
-    for category, pattern in HARD_BLOCKED_INPUT_PATTERNS:
+    for category, pattern in HARD_BLOCKED_INPUT_PATTERNS + DYNAMIC_EXECUTION_PATTERNS:
         if pattern.search(normalized):
             return category
     return None

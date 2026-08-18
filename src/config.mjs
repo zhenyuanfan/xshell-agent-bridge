@@ -16,6 +16,9 @@ const DEFAULTS = {
     maxSendChars: 8192,
     jobTimeoutMs: 120_000,
     staleSessionMs: 5_000,
+    completedJobRetentionMs: 86_400_000,
+    sessionRetentionMs: 604_800_000,
+    runtimeDataRetentionMs: 2_592_000_000,
   },
   bridge: {
     pollIntervalMs: 250,
@@ -24,13 +27,21 @@ const DEFAULTS = {
 
 function mergeConfig(raw) {
   const safety = { ...DEFAULTS.safety, ...raw.safety };
-  if (!Number.isFinite(safety.jobTimeoutMs)) safety.jobTimeoutMs = DEFAULTS.safety.jobTimeoutMs;
-  safety.jobTimeoutMs = Math.max(DEFAULTS.safety.jobTimeoutMs, safety.jobTimeoutMs);
+  // Keep existing installations compatible with the original safety floor.
+  if (Number.isFinite(safety.jobTimeoutMs)) {
+    safety.jobTimeoutMs = Math.max(DEFAULTS.safety.jobTimeoutMs, safety.jobTimeoutMs);
+  }
   return {
     server: { ...DEFAULTS.server, ...raw.server },
     safety,
     bridge: { ...DEFAULTS.bridge, ...raw.bridge },
   };
+}
+
+function requireInteger(value, field, minimum, maximum) {
+  if (!Number.isInteger(value) || value < minimum || value > maximum) {
+    throw new Error(`${field} must be an integer between ${minimum} and ${maximum}.`);
+  }
 }
 
 function validateConfig(config) {
@@ -43,6 +54,13 @@ function validateConfig(config) {
   if (typeof config.server.token !== 'string' || config.server.token.length < 32) {
     throw new Error('server.token must contain at least 32 characters.');
   }
+  requireInteger(config.safety.maxSendChars, 'safety.maxSendChars', 1, 65_536);
+  requireInteger(config.safety.staleSessionMs, 'safety.staleSessionMs', 1_000, 60_000);
+  requireInteger(config.safety.jobTimeoutMs, 'safety.jobTimeoutMs', 120_000, 1_800_000);
+  requireInteger(config.safety.completedJobRetentionMs, 'safety.completedJobRetentionMs', 3_600_000, 2_592_000_000);
+  requireInteger(config.safety.sessionRetentionMs, 'safety.sessionRetentionMs', 3_600_000, 7_776_000_000);
+  requireInteger(config.safety.runtimeDataRetentionMs, 'safety.runtimeDataRetentionMs', 86_400_000, 31_536_000_000);
+  requireInteger(config.bridge.pollIntervalMs, 'bridge.pollIntervalMs', 50, 250);
   return config;
 }
 

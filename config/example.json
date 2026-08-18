@@ -7,7 +7,10 @@
   "safety": {
     "maxSendChars": 8192,
     "jobTimeoutMs": 120000,
-    "staleSessionMs": 5000
+    "staleSessionMs": 5000,
+    "completedJobRetentionMs": 86400000,
+    "sessionRetentionMs": 604800000,
+    "runtimeDataRetentionMs": 2592000000
   },
   "bridge": {
     "pollIntervalMs": 250
