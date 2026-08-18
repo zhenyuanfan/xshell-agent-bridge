@@ -57,9 +57,32 @@ const HARD_BLOCKED_INPUT_PATTERNS = [
   },
 ];
 
-function findHardBlockedOperation(text) {
+// A deny-list can recognize known destructive commands, but it cannot safely
+// reason about arbitrary code handed to a shell or interpreter. Reject these
+// dispatch mechanisms outright so an encoded or generated command cannot turn
+// into a second, uninspected command at the remote end.
+const DYNAMIC_EXECUTION_PATTERNS = [
+  {
+    category: '将编码或下载内容交给命令解释器执行',
+    pattern: /\b(?:base64|openssl\s+enc|xxd\s+-r|curl|wget)\b[^\r\n]{0,1000}\|\s*(?:(?:sudo|env|command|nohup)\s+)*(?:\/?(?:usr\/)?bin\/)?(?:ba)?sh\b/i,
+  },
+  {
+    category: '命令解释器或脚本解释器执行',
+    pattern: /(?:^|[\r\n;&|]\s*)(?:(?:sudo|env|command|nohup|time|nice)\s+)*(?:\/?(?:usr\/)?bin\/)?(?:ba)?sh\b|(?:^|[\r\n;&|]\s*)(?:(?:sudo|env|command|nohup|time|nice)\s+)*(?:\/?(?:usr\/)?bin\/)?(?:python(?:3)?|node|perl|ruby|php|lua|pwsh|powershell|cmd(?:\.exe)?)\b/i,
+  },
+  {
+    category: '动态变量或命令替换执行',
+    pattern: /\$\(|`|(?:^|[\r\n;&|]\s*)(?:eval|source)\b|(?:^|[\r\n;&|]\s*)\.\s+/i,
+  },
+];
+
+function findBlockedOperation(text) {
   const normalized = String(text || '').replace(/\\\r?\n/g, ' ');
-  return HARD_BLOCKED_INPUT_PATTERNS.find(({ pattern }) => pattern.test(normalized))?.category || null;
+  return (
+    HARD_BLOCKED_INPUT_PATTERNS.find(({ pattern }) => pattern.test(normalized))?.category
+    || DYNAMIC_EXECUTION_PATTERNS.find(({ pattern }) => pattern.test(normalized))?.category
+    || null
+  );
 }
 
 export class BridgeError extends Error {
@@ -76,6 +99,7 @@ function publicJob(job) {
     id: job.id,
     sessionId: job.sessionId,
     agentId: job.agentId,
+    requestId: job.requestId,
     action: job.action,
     status: job.status,
     createdAt: job.createdAt,
@@ -106,15 +130,27 @@ function auditJob(job) {
 }
 
 export class XshellBridgeCore {
-  constructor({ staleSessionMs = 5_000, jobTimeoutMs = 120_000, maxSendChars = 8_192, maxExplanationChars = 1_000, now = Date.now, audit = () => {} } = {}) {
+  constructor({
+    staleSessionMs = 5_000,
+    jobTimeoutMs = 120_000,
+    maxSendChars = 8_192,
+    maxExplanationChars = 1_000,
+    completedJobRetentionMs = 86_400_000,
+    sessionRetentionMs = 604_800_000,
+    now = Date.now,
+    audit = () => {},
+  } = {}) {
     this.staleSessionMs = staleSessionMs;
     this.jobTimeoutMs = jobTimeoutMs;
     this.maxSendChars = maxSendChars;
     this.maxExplanationChars = maxExplanationChars;
+    this.completedJobRetentionMs = completedJobRetentionMs;
+    this.sessionRetentionMs = sessionRetentionMs;
     this.now = now;
     this.audit = audit;
     this.sessions = new Map();
     this.jobs = new Map();
+    this.idempotencyKeys = new Map();
   }
 
   register({ bridgeId, metadata = {}, screen = '' } = {}) {
@@ -166,7 +202,7 @@ export class XshellBridgeCore {
     };
   }
 
-  submitJob(id, { agentId = 'unknown-agent', action } = {}) {
+  submitJob(id, { agentId = 'unknown-agent', requestId, action } = {}) {
     const session = this.requireSession(id);
     if (!this.isOnline(session)) {
       throw new BridgeError('The Xshell bridge is offline or stale.', 409, 'SESSION_OFFLINE');
@@ -190,11 +226,26 @@ export class XshellBridgeCore {
       this.validateHardBlockedInput(action.text);
       this.validateSensitiveInput(session, action.text);
     }
+    const normalizedAgentId = String(agentId).slice(0, 128);
+    const normalizedRequestId = this.validateRequestId(requestId);
+    const idempotencyKey = normalizedRequestId && `${id}\u0000${normalizedAgentId}\u0000${normalizedRequestId}`;
+    if (idempotencyKey) {
+      const existing = this.idempotencyKeys.get(idempotencyKey);
+      if (existing) {
+        if (existing.actionJson !== JSON.stringify(action)) {
+          throw new BridgeError('requestId was already used for a different action.', 409, 'IDEMPOTENCY_KEY_REUSED');
+        }
+        const existingJob = this.jobs.get(existing.jobId);
+        if (existingJob) return publicJob(existingJob);
+        this.idempotencyKeys.delete(idempotencyKey);
+      }
+    }
     const now = this.now();
     const job = {
       id: randomUUID(),
       sessionId: id,
-      agentId: String(agentId).slice(0, 128),
+      agentId: normalizedAgentId,
+      requestId: normalizedRequestId,
       action: structuredClone(action),
       status: 'queued',
       createdAt: now,
@@ -204,6 +255,7 @@ export class XshellBridgeCore {
       error: null,
     };
     this.jobs.set(job.id, job);
+    if (idempotencyKey) this.idempotencyKeys.set(idempotencyKey, { jobId: job.id, actionJson: JSON.stringify(action) });
     session.queue.push(job.id);
     this.audit({ type: 'job.queued', ...auditJob(job) });
     return publicJob(job);
@@ -252,10 +304,12 @@ export class XshellBridgeCore {
     }
     if (this.jobs.has(snapshot.id)) return publicJob(this.jobs.get(snapshot.id));
     this.validateAction(snapshot.action);
+    const requestId = this.validateRequestId(snapshot.requestId);
     const job = {
       id: snapshot.id,
       sessionId: id,
       agentId: String(snapshot.agentId || 'recovered-agent').slice(0, 128),
+      requestId,
       action: structuredClone(snapshot.action),
       status: 'delivered',
       createdAt: Number(snapshot.createdAt) || this.now(),
@@ -265,6 +319,12 @@ export class XshellBridgeCore {
       error: null,
     };
     this.jobs.set(job.id, job);
+    if (requestId) {
+      this.idempotencyKeys.set(`${id}\u0000${job.agentId}\u0000${requestId}`, {
+        jobId: job.id,
+        actionJson: JSON.stringify(snapshot.action),
+      });
+    }
     session.activeJobId = job.id;
     this.audit({ type: 'job.recovered_uncertain', ...auditJob(job) });
     return publicJob(job);
@@ -273,7 +333,45 @@ export class XshellBridgeCore {
   getJob(jobId) {
     const job = this.jobs.get(jobId);
     if (!job) throw new BridgeError('Unknown job.', 404, 'JOB_NOT_FOUND');
+    const session = this.sessions.get(job.sessionId);
+    if (session) this.expireActiveJob(session);
     return publicJob(job);
+  }
+
+  sweep() {
+    const now = this.now();
+    let expired = 0;
+    let removedJobs = 0;
+    let removedSessions = 0;
+    for (const session of this.sessions.values()) {
+      const activeBefore = this.jobs.get(session.activeJobId)?.status;
+      this.expireActiveJob(session);
+      if (activeBefore === 'delivered' && !session.activeJobId) expired += 1;
+
+      if (this.isOnline(session)) continue;
+      while (session.queue.length > 0) {
+        const job = this.jobs.get(session.queue.shift());
+        if (!job || job.status !== 'queued') continue;
+        job.status = 'failed';
+        job.completedAt = now;
+        job.error = 'The Xshell bridge session went offline before this action was delivered. It was not retained for a later session.';
+        this.audit({ type: 'job.session_offline', ...auditJob(job) });
+        expired += 1;
+      }
+    }
+
+    for (const [jobId, job] of this.jobs) {
+      if (!['completed', 'failed'].includes(job.status) || now - job.completedAt <= this.completedJobRetentionMs) continue;
+      this.jobs.delete(jobId);
+      if (job.requestId) this.idempotencyKeys.delete(`${job.sessionId}\u0000${job.agentId}\u0000${job.requestId}`);
+      removedJobs += 1;
+    }
+    for (const [sessionId, session] of this.sessions) {
+      if (session.activeJobId || session.queue.length > 0 || now - session.lastSeenAt <= this.sessionRetentionMs) continue;
+      this.sessions.delete(sessionId);
+      removedSessions += 1;
+    }
+    return { expired, removedJobs, removedSessions };
   }
 
   describeSession(session) {
@@ -348,6 +446,14 @@ export class XshellBridgeCore {
     }
   }
 
+  validateRequestId(requestId) {
+    if (requestId === undefined || requestId === null) return null;
+    if (typeof requestId !== 'string' || !/^[a-zA-Z0-9._:-]{1,128}$/.test(requestId)) {
+      throw new BridgeError('requestId must be 1-128 URL-safe characters.', 400, 'INVALID_REQUEST_ID');
+    }
+    return requestId;
+  }
+
   validateSensitiveInput(session, text) {
     const visibleTail = String(session.screen || '').trimEnd().split(/\r?\n/).slice(-3).join('\n');
     if (SENSITIVE_PROMPT_PATTERN.test(visibleTail)) {
@@ -367,7 +473,7 @@ export class XshellBridgeCore {
   }
 
   validateHardBlockedInput(text) {
-    const category = findHardBlockedOperation(text);
+    const category = findBlockedOperation(text);
     if (!category) return;
     throw new BridgeError(
       `企业安全模式已禁止 Agent 执行“${category}”操作。即使用户愿意确认，桥接程序也不会发送；如确有需要，请用户在 Xshell 中亲自输入。`,

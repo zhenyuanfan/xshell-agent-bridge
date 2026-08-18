@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { BridgeError, XshellBridgeCore } from './core.mjs';
 import { DATA_DIR, loadConfig } from './config.mjs';
 import { FileBridgeTransport } from './file-transport.mjs';
+import { cleanRuntimeData } from './runtime-retention.mjs';
 
 function sendJson(response, statusCode, value) {
   const body = JSON.stringify(value);
@@ -67,6 +68,16 @@ export async function createDaemon({ config: providedConfig, listen = true } = {
     onError: (error) => process.stderr.write(`[xshell-bridge] file transport: ${error.message}\n`),
   });
   await fileTransport.start();
+  const maintenanceTimer = setInterval(() => {
+    core.sweep();
+  }, 1_000);
+  maintenanceTimer.unref();
+  const cleanupRuntimeData = () => cleanRuntimeData({
+    dataDir: DATA_DIR,
+    retentionMs: config.safety.runtimeDataRetentionMs ?? 2_592_000_000,
+  }).catch((error) => process.stderr.write(`[xshell-bridge] runtime cleanup failed: ${error.message}\n`));
+  const cleanupTimer = setInterval(cleanupRuntimeData, 3_600_000);
+  cleanupTimer.unref();
 
   const server = createServer(async (request, response) => {
     try {
@@ -159,7 +170,11 @@ export async function createDaemon({ config: providedConfig, listen = true } = {
       });
     });
   }
-  server.on('close', () => fileTransport.stop());
+  server.on('close', () => {
+    fileTransport.stop();
+    clearInterval(maintenanceTimer);
+    clearInterval(cleanupTimer);
+  });
   return { server, core, config, fileTransport };
 }
 
