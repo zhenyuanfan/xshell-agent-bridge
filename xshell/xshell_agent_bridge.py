@@ -41,6 +41,7 @@ STATE_PATH = os.path.join(SESSION_DIR, "state.json")
 COMMAND_PATH = os.path.join(SESSION_DIR, "command.json")
 ACTIVE_PATH = os.path.join(SESSION_DIR, "command.active.json")
 RESULT_PATH = os.path.join(SESSION_DIR, "result.json")
+LOOP_ERROR_PATH = os.path.join(SESSION_DIR, "bridge-error.json")
 LAST_STATE = None
 LAST_TOUCH_AT = 0.0
 HARD_BLOCKED_INPUT_PATTERNS = (
@@ -164,6 +165,23 @@ def atomic_write_json(path, value):
 def read_json(path):
     with open(path, "r", encoding="utf-8") as handle:
         return json.load(handle)
+
+
+def record_loop_error(stage, error):
+    # A broad catch keeps the Xshell script alive, but it must never hide an
+    # error that prevents an approval dialog from being shown. Keep the most
+    # recent failure next to the IPC files so it can be inspected locally.
+    try:
+        atomic_write_json(
+            LOOP_ERROR_PATH,
+            {
+                "stage": str(stage),
+                "error": str(error),
+                "updatedAt": time.time(),
+            },
+        )
+    except Exception:
+        pass
 
 
 def safe_value(getter, default=None):
@@ -391,13 +409,22 @@ def Main():
     while True:
         try:
             write_state()
+        except Exception as error:
+            record_loop_error("write_state", error)
+
+        # A failed transfer-launch scan must not disable every terminal
+        # confirmation. Keep these two independent queues isolated.
+        try:
             process_desktop_launch_requests()
+        except Exception as error:
+            record_loop_error("desktop_launch", error)
+
+        try:
             if os.path.exists(COMMAND_PATH) and not os.path.exists(ACTIVE_PATH):
                 # Claim before execution. An uncertain input is never replayed after a crash.
                 os.replace(COMMAND_PATH, ACTIVE_PATH)
                 execute_job(read_json(ACTIVE_PATH))
                 write_state()
-        except Exception:
-            # Keep the script alive; the daemon can restart independently.
-            pass
+        except Exception as error:
+            record_loop_error("command_dispatch", error)
         xsh.Session.Sleep(POLL_MS)
