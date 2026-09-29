@@ -1,4 +1,5 @@
 # Xshell Agent Bridge
+**各位有好的想法也可以直接提出来**
 
 **Xshell MCP Server for AI Agents** — 一个面向 Codex、Claude Code、Kimi Code CLI、Cursor 等 MCP 客户端的本地桥接程序，让 AI Agent 能读取和操作已打开的 Xshell 终端标签页。
 
