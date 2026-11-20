@@ -22,6 +22,12 @@ def load_config():
 
 CONFIG = load_config()
 POLL_MS = int(CONFIG.get("bridge", {}).get("pollIntervalMs", 250))
+# High-frequency xsh automation calls (full-screen reads, property polls) are
+# the main suspect behind Xshell session UI crashes after ~20-25 minutes of
+# runtime. Keep the job queue responsive at POLL_MS, but throttle the
+# expensive snapshot work to a few Hz at most.
+SCREEN_CAPTURE_INTERVAL_MS = int(CONFIG.get("bridge", {}).get("screenCaptureIntervalMs", 2000))
+METADATA_INTERVAL_MS = int(CONFIG.get("bridge", {}).get("metadataIntervalMs", 5000))
 BRIDGE_ID = os.urandom(16).hex()
 PROTOCOL = "xshell-agent-file-v2"
 APPROVAL_MODE = "xshell-dialog-v1"
@@ -44,6 +50,10 @@ RESULT_PATH = os.path.join(SESSION_DIR, "result.json")
 LOOP_ERROR_PATH = os.path.join(SESSION_DIR, "bridge-error.json")
 LAST_STATE = None
 LAST_TOUCH_AT = 0.0
+LAST_METADATA = None
+LAST_METADATA_AT = 0.0
+LAST_SCREEN_CAPTURE = ""
+LAST_SCREEN_CAPTURE_AT = 0.0
 HARD_BLOCKED_INPUT_PATTERNS = (
     (
         "文件删除或内容清空",
@@ -210,19 +220,28 @@ def capture_screen():
     columns = int(safe_value(lambda: xsh.Screen.Columns, 0) or 0)
     if rows < 1 or columns < 1:
         return ""
-    return str(xsh.Screen.Get(1, 1, rows, columns))
+    return str(safe_value(lambda: xsh.Screen.Get(1, 1, rows, columns), ""))
 
 
-def write_state():
-    global LAST_STATE, LAST_TOUCH_AT
+def write_state(force=False):
+    global LAST_STATE, LAST_TOUCH_AT, LAST_METADATA, LAST_METADATA_AT
+    global LAST_SCREEN_CAPTURE, LAST_SCREEN_CAPTURE_AT
+    now = time.monotonic()
+    # Throttle the expensive xsh automation calls; the queue stays responsive
+    # because this function still runs every loop and only skips re-capture.
+    if force or now - LAST_SCREEN_CAPTURE_AT >= SCREEN_CAPTURE_INTERVAL_MS / 1000.0:
+        LAST_SCREEN_CAPTURE = capture_screen()
+        LAST_SCREEN_CAPTURE_AT = now
+    if force or now - LAST_METADATA_AT >= METADATA_INTERVAL_MS / 1000.0:
+        LAST_METADATA = metadata()
+        LAST_METADATA_AT = now
     state = {
         "protocol": PROTOCOL,
         "sessionId": BRIDGE_ID,
-        "metadata": metadata(),
-        "screen": capture_screen(),
+        "metadata": LAST_METADATA if LAST_METADATA is not None else metadata(),
+        "screen": LAST_SCREEN_CAPTURE,
     }
     serialized = json.dumps(state, ensure_ascii=False, sort_keys=True)
-    now = time.monotonic()
     if serialized != LAST_STATE or not os.path.exists(STATE_PATH):
         atomic_write_json(STATE_PATH, state)
         LAST_STATE = serialized
@@ -291,14 +310,20 @@ def execute_job(job):
                 {"jobId": job["id"], "job": job, "ok": False, "error": "用户在 Xshell 安全确认框中拒绝了该操作。"},
             )
             return
-        if action.get("type") == "send":
-            xsh.Screen.Send(action.get("text", ""))
-            if action.get("enter", False):
-                xsh.Screen.Send("\r")
-        elif action.get("type") == "interrupt":
-            xsh.Screen.Send(chr(3))
-        else:
-            raise RuntimeError("unsupported action: " + str(action.get("type")))
+        # Synchronous mode pauses terminal output and couples the UI thread to
+        # the script; enable it only for the actual Send and always restore it.
+        xsh.Screen.Synchronous = True
+        try:
+            if action.get("type") == "send":
+                xsh.Screen.Send(action.get("text", ""))
+                if action.get("enter", False):
+                    xsh.Screen.Send("\r")
+            elif action.get("type") == "interrupt":
+                xsh.Screen.Send(chr(3))
+            else:
+                raise RuntimeError("unsupported action: " + str(action.get("type")))
+        finally:
+            xsh.Screen.Synchronous = False
         atomic_write_json(
             RESULT_PATH,
             {
@@ -401,10 +426,10 @@ def process_desktop_launch_requests():
 
 
 def Main():
-    xsh.Screen.Synchronous = True
+    xsh.Screen.Synchronous = False
     os.makedirs(SESSION_DIR, exist_ok=True)
     os.makedirs(DESKTOP_LAUNCH_ROOT, exist_ok=True)
-    write_state()
+    write_state(force=True)
 
     while True:
         try:
@@ -424,7 +449,9 @@ def Main():
                 # Claim before execution. An uncertain input is never replayed after a crash.
                 os.replace(COMMAND_PATH, ACTIVE_PATH)
                 execute_job(read_json(ACTIVE_PATH))
-                write_state()
+                # Force a fresh snapshot so the result (and any password-style
+                # prompt that appeared) is visible to the daemon immediately.
+                write_state(force=True)
         except Exception as error:
             record_loop_error("command_dispatch", error)
         xsh.Session.Sleep(POLL_MS)
